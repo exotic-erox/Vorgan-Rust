@@ -1,4 +1,4 @@
-# Vorgan (Broken Rn fixing...)
+# Vorgan
 
 
 A mouse-and-keyboard file manager for the terminal — now as a single Rust
