@@ -1,4 +1,5 @@
-# Vorgan
+# Vorgan (Broken Rn fixing...)
+
 
 A mouse-and-keyboard file manager for the terminal — now as a single Rust
 binary. Its signature move is the **Graph** (press `Tab`): your current folder,
