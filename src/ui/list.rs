@@ -77,6 +77,9 @@ pub struct ListView {
     pub current_name: String,
     pub is_main: bool,
     pub width: usize,
+    /// the cursor row the viewport last followed; while it matches, the
+    /// wheel is free to scroll away from the cursor without being snapped back
+    followed: Option<usize>,
 }
 
 impl ListView {
@@ -92,6 +95,7 @@ impl ListView {
             current_name: String::new(),
             is_main,
             width: 0,
+            followed: None,
         }
     }
 
@@ -99,16 +103,39 @@ impl ListView {
         self.view.get(self.cursor)
     }
 
+    /// keep the viewport legal; follow the cursor only when it has moved
     pub fn ensure_visible(&mut self) {
         if self.rows == 0 {
             return;
         }
+        self.top = self.top.min(self.view.len().saturating_sub(self.rows));
+        if self.followed == Some(self.cursor) {
+            return;
+        }
+        self.followed = Some(self.cursor);
         if self.cursor < self.top {
             self.top = self.cursor;
         }
         if self.cursor >= self.top + self.rows {
             self.top = self.cursor + 1 - self.rows;
         }
+    }
+
+    /// scroll the cursor into view even if it did not change (keys, new listing)
+    pub fn reveal(&mut self) {
+        self.followed = None;
+        self.ensure_visible();
+    }
+
+    /// the wheel: move the viewport, not the cursor (positive = down)
+    pub fn scroll_by(&mut self, d: i32) {
+        let max = self.view.len().saturating_sub(self.rows) as i32;
+        self.top = (self.top as i32 + d).clamp(0, max) as usize;
+    }
+
+    /// true when the list is longer than its pane, i.e. a scrollbar is due
+    pub fn overflows(&self, height: u16) -> bool {
+        self.view.len() > height as usize
     }
 
     pub fn clear_sel(&mut self) {

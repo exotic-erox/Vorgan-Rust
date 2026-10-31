@@ -191,12 +191,12 @@ pub fn fmt_perms(mode: u32) -> String {
     for (mask, ch) in table {
         out.push(if mode & mask != 0 { ch } else { '-' });
     }
-    let kind = if mode & 0o040000 != 0 {
-        'd'
-    } else if mode & 0o120000 != 0 {
-        'l'
-    } else {
-        '-'
+    // the file type is a 4-bit field, not independent flags (a regular file
+    // is 0o100000, which overlaps the symlink bits)
+    let kind = match mode & 0o170000 {
+        0o040000 => 'd',
+        0o120000 => 'l',
+        _ => '-',
     };
     format!("{kind}{out}")
 }
@@ -426,6 +426,14 @@ pub fn fuzzy(name: &str, q: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn perms_match_stat_filemode() {
+        assert_eq!(fmt_perms(0o100644), "-rw-r--r--");
+        assert_eq!(fmt_perms(0o040755), "drwxr-xr-x");
+        assert_eq!(fmt_perms(0o120777), "lrwxrwxrwx");
+        assert_eq!(fmt_perms(0), "");
+    }
+
     use super::*;
     #[test]
     fn kinds_and_suffixes() {

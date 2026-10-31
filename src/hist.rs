@@ -80,11 +80,17 @@ mod tests {
     use super::*;
     #[test]
     fn counts_cd() {
-        let tmp = std::env::temp_dir();
-        let d = tmp.join(format!("vg-frent-{}", std::process::id()));
-        let h = d.join("fish");
-        let _ = fs::create_dir_all(&h);
-        fs::write(h.join("fish_history"), "- cmd: cd ~/Documents\n  when: 1\n  paths:\n    - ~/Music/\n- cmd: ls\n  when: 2\npaths:\n    - /tmp\n").unwrap();
+        // frecent_dirs only keeps folders that exist, so make real ones
+        let d = std::env::temp_dir().join(format!("vg-frent-{}", std::process::id()));
+        let docs = d.join("Documents");
+        let _ = fs::create_dir_all(&docs);
+        let _ = fs::create_dir_all(d.join("fish"));
+        let log = format!(
+            "- cmd: cd {0}\n  when: 1\n  paths:\n    - {0}/\n- cmd: ls\n  when: 2\n",
+            docs.display()
+        );
+        fs::write(d.join("fish").join("fish_history"), log).unwrap();
+        std::env::set_var("XDG_DATA_HOME", &d); // history_path() reads this
         let out = frecent_dirs(10);
         let _ = fs::remove_dir_all(&d);
         assert!(out.iter().any(|p| p.ends_with("Documents")), "{out:?}");

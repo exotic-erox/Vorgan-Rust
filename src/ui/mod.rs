@@ -20,7 +20,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ratatui::Terminal;
 use unicode_width::UnicodeWidthStr;
 
@@ -161,6 +161,8 @@ struct Geo {
     sz0: u16,
     sz1: u16,
 }
+
+const WHEEL_STEP: i32 = 2;
 
 // ---------- key canonicalisation ----------
 
@@ -452,7 +454,7 @@ impl App {
         lv.cursor = cur
             .and_then(|n| lv.view.iter().position(|e| e.name == n))
             .unwrap_or(0);
-        lv.ensure_visible();
+        lv.reveal();
     }
 
     fn refresh_view(&mut self, keep: Option<String>) {
@@ -494,7 +496,7 @@ impl App {
             return;
         }
         self.main.cursor = (self.main.cursor as i32 + d).clamp(0, n - 1) as usize;
-        self.main.ensure_visible();
+        self.main.reveal();
         self.after_move();
     }
 
@@ -561,12 +563,12 @@ impl App {
             "up" => self.move_cur(-1),
             "top" => {
                 self.main.cursor = 0;
-                self.main.ensure_visible();
+                self.main.reveal();
                 self.after_move();
             }
             "bottom" => {
                 self.main.cursor = self.main.view.len().saturating_sub(1);
-                self.main.ensure_visible();
+                self.main.reveal();
                 self.after_move();
             }
             "enter" => self.act_enter(),
@@ -1410,8 +1412,7 @@ impl App {
         match m {
             Msg::Preview { seq, pv } => {
                 if seq == self.pv_seq {
-                    self.pv.pv = pv;
-                    self.pv.drawn = None;
+                    self.pv.set(pv);
                     self.dirty = true;
                 }
             }
@@ -1599,29 +1600,17 @@ impl App {
             .map(String::as_str)
             .unwrap_or_default()
             .to_string();
-        let cell = sixel::cell_px();
-        let (cols, rows) = match &self.geo {
-            Some(g) => (
-                g.prev.width.saturating_sub(4).max(10) as usize,
-                g.prev.height.saturating_sub(5).max(6) as usize,
-            ),
-            None => (30, 20),
-        };
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let pv = build_preview(
                 Some(&e),
                 &pal,
-                cols,
-                rows,
                 nerd,
                 if pw.is_empty() {
                     None
                 } else {
                     Some(pw.as_str())
                 },
-                cell,
-                true,
             );
             let _ = tx.send(Msg::Preview { seq, pv });
         });
@@ -1688,13 +1677,7 @@ impl App {
             }
             if self.dirty {
                 self.dirty = false;
-                let mut six = None;
-                t.draw(|f| {
-                    six = self.draw(f);
-                })?;
-                if let Some(req) = six {
-                    sixel::place_at(req.row, req.col, &req.data);
-                }
+                self.paint_frame(t)?;
             }
             let timeout = if self.graph.is_some() {
                 Duration::from_millis(33)
@@ -1713,11 +1696,38 @@ impl App {
                         self.on_key(&k)
                     }
                     Event::Mouse(m) => self.on_mouse(m),
-                    Event::Resize(_, _) => self.dirty = true,
+                    Event::Resize(_, _) => {
+                        self.pv.forget();
+                        self.dirty = true;
+                    }
                     _ => {}
                 }
             }
         }
+    }
+
+    /// One frame, then the picture. ratatui only resends cells that changed,
+    /// and a sixel under unchanged cells would survive that, so when the
+    /// picture goes away the pane is first blanked for real (a frame with the
+    /// area cleared), then drawn again.
+    fn paint_frame(
+        &mut self,
+        t: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> std::io::Result<()> {
+        let mut six = None;
+        t.draw(|f| six = self.draw(f))?;
+        if let Some(gone) = self.pv.erase.take() {
+            t.draw(|f| {
+                self.draw(f);
+                f.render_widget(Clear, gone);
+            })?;
+            t.draw(|f| six = self.draw(f))?;
+        }
+        if let Some(req) = six {
+            sixel::place_at(req.row, req.col, &req.data);
+            self.pv.mark_painted(&req);
+        }
+        Ok(())
     }
 
     fn draw(&mut self, f: &mut ratatui::Frame) -> Option<preview::SixReq> {
@@ -1732,6 +1742,7 @@ impl App {
             ])
             .split(area);
             self.graph_pane = rows[1];
+            self.pv.forget();
             gv.resize(rows[1].width, rows[1].height);
             let title = gv.title_line(&self.pal);
             f.render_widget(Paragraph::new(title).style(bgp(self.pal.panel2)), rows[0]);
@@ -1986,14 +1997,8 @@ impl App {
             sz1: g.4,
         });
         let nerd = self.cfg.icons == "nerd";
-        self.parent_list.width = g.0.width as usize;
-        self.parent_list.rows = g.0.height as usize;
-        self.parent_list.ensure_visible();
-        f.render_widget(Paragraph::new(self.parent_list.lines(&self.pal, nerd)), g.0);
-        self.main.width = g.1.width as usize;
-        self.main.rows = g.1.height as usize;
-        self.main.ensure_visible();
-        f.render_widget(Paragraph::new(self.main.lines(&self.pal, nerd)), g.1);
+        self.list_pane(f, g.0, false, nerd);
+        self.list_pane(f, g.1, true, nerd);
         // sizers
         let scolor = cpx(mix(self.pal.panel, self.pal.faint, 0.4));
         f.render_widget(
@@ -2011,9 +2016,48 @@ impl App {
             Rect::new(g.4, area.y, 1, area.height),
         );
         // preview
-        let e = self.main.entry().cloned();
-        let req = self.pv.draw(f, g.2, &self.pal, e.as_ref());
-        self.pending_six = req;
+        if self.overlay.is_some() {
+            self.pv.taint();
+        }
+        let paint = self.overlay.is_none() && self.sizer.is_none();
+        self.pending_six = self.pv.draw(f, g.2, &self.pal, paint);
+    }
+
+    /// one file list plus its 1-column scrollbar (python: scrollbar-size-vertical: 1)
+    fn list_pane(&mut self, f: &mut ratatui::Frame, area: Rect, main: bool, nerd: bool) {
+        let pal = self.pal.clone();
+        let lv = if main {
+            &mut self.main
+        } else {
+            &mut self.parent_list
+        };
+        let bar = lv.overflows(area.height);
+        lv.width = (area.width as usize).saturating_sub(bar as usize);
+        lv.rows = area.height as usize;
+        lv.ensure_visible();
+        let body = Rect {
+            width: area.width - bar as u16,
+            ..area
+        };
+        let base = if main { pal.panel } else { pal.side() };
+        f.render_widget(Block::new().style(bgp(base)), area);
+        f.render_widget(Paragraph::new(lv.lines(&pal, nerd)), body);
+        if bar {
+            let mut st = ScrollbarState::new(lv.view.len())
+                .viewport_content_length(lv.rows)
+                .position(lv.top);
+            f.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(None)
+                    .end_symbol(None)
+                    .track_symbol(Some(" "))
+                    .thumb_symbol("┃")
+                    .thumb_style(cpx(mix(base, pal.faint, 0.8)))
+                    .track_style(Style::new().bg(Color::Rgb(base.0, base.1, base.2))),
+                area,
+                &mut st,
+            );
+        }
     }
 
     fn status_row(&mut self, f: &mut ratatui::Frame, row: Rect) {
@@ -2116,7 +2160,7 @@ impl App {
             if mt != self.pal_mtime {
                 self.pal_mtime = mt;
                 self.pal = Palette::load(&spath).0;
-                self.pv.drawn = None;
+                self.pv.refresh();
                 self.dirty = true;
             }
         }
@@ -2425,7 +2469,7 @@ impl App {
             let row = *row;
             self.end_hint();
             self.main.cursor = row;
-            self.main.ensure_visible();
+            self.main.reveal();
             self.after_move();
             let ent = self.main.entry().cloned();
             if let Some(e) = ent {
@@ -2488,14 +2532,27 @@ impl App {
             MouseEventKind::Down(btn) => self.mouse_down(btn, x, y, ctrl),
             MouseEventKind::Drag(_) => self.mouse_drag(x, y, ctrl),
             MouseEventKind::Up(btn) => self.mouse_up(btn, x, y, ctrl),
-            MouseEventKind::ScrollUp => self.scroll(-3),
-            MouseEventKind::ScrollDown => self.scroll(3),
+            MouseEventKind::ScrollUp => self.wheel(x, y, -WHEEL_STEP),
+            MouseEventKind::ScrollDown => self.wheel(x, y, WHEEL_STEP),
             _ => {}
         }
     }
 
-    fn scroll(&mut self, d: i32) {
-        self.move_cur(d);
+    /// textual's default: two rows per notch, on whichever pane the pointer
+    /// is over. The cursor stays where it is.
+    fn wheel(&mut self, x: u16, y: u16, d: i32) {
+        let Some(g) = self.geo else { return };
+        let over = |r: Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+        if over(g.prev) {
+            self.pv.scroll_by(d);
+        } else if over(g.main) {
+            self.main.scroll_by(d);
+        } else if over(g.parent) {
+            self.parent_list.scroll_by(d);
+        } else {
+            return;
+        }
+        self.dirty = true;
     }
 
     fn mouse_graph(&mut self, m: MouseEvent, gx: u16, gy: u16) {
@@ -2682,6 +2739,9 @@ impl App {
             && x >= g.main.x
             && x < g.main.x + g.main.width
         {
+            if self.main.overflows(g.main.height) && x + 1 == g.main.x + g.main.width {
+                return; // scrollbar column
+            }
             self.drag_pending = Some((self.abs_row(y, &g, true).unwrap_or(usize::MAX), x, y));
             if self.abs_row(y, &g, true).is_none() {
                 // below the last row: like python, a click on blank clears

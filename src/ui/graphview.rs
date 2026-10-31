@@ -83,7 +83,8 @@ impl GraphView {
 
     fn render_frame(&mut self) {
         let mut cv = self.g.render(self.hover.or(self.focus));
-        self.parts.render(&mut cv, &self.g.pal, &self.g.nodes, 0.55);
+        self.parts
+            .render(&mut cv, &self.g, self.hover.or(self.focus), 0.55);
         self.frame = cv.to_text();
     }
 
@@ -147,6 +148,8 @@ impl GraphView {
         if let Some(d) = self.drag.take() {
             if self.g.nodes[d].role == crate::graph::Role::Kid {
                 self.g.pin(d);
+                let (x, y) = crate::particles::home_of(&self.g, &self.g.nodes[d]);
+                self.parts.shock(x, y, 1, 18.0); // a small burst where it snaps in
                 self.wake();
                 return (None, Some(self.g.nodes[d].name.clone()));
             }

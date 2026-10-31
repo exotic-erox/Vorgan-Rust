@@ -1,6 +1,6 @@
 # Maintainer: exotic-erox <exotic-erox@users.noreply.github.com>
 pkgname=vorgan
-pkgver=0.2.0
+pkgver=0.2.1
 pkgrel=1
 pkgdesc="Terminal file manager with a particle-graph navigator (Rust)"
 arch=('x86_64' 'aarch64')

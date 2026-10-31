@@ -16,8 +16,9 @@ that only the native port can do:
   journal
 - **Progress bars** — big copies, trashes, extracts and searches show a bar in
   the status line as they run
-- A smoother graph: the bubbles drift with the particle system from
-  [vizr](https://pypi.org/project/vizr/)
+- A livelier graph: bubbles drift with the particle system from
+  [vizr](https://pypi.org/project/vizr/), dots stream along the edges, and
+  hovering a bubble lights its neighbourhood
 - One ~10 MB binary, no python, no pip
 
 ![Vorgan](preview.png)
@@ -26,48 +27,66 @@ The Graph:
 
 ![The Graph](graph-preview.png)
 
+New in 0.2.1 (rendered from the app's own output, hovering a bubble dims the rest and
+lights its links; bright packets stream along the edges):
+
+![Graph particles](docs/screenshots/graph-particles.png)
+
+Image previews are fitted without stretching and sit on the pane's own colour
+(this is the exact sixel the app sends, decoded):
+
+![Image preview](docs/screenshots/image-preview.png)
+
 Made on Arch + Hyprland + fish with the Caelestia palette, but it runs in any
 terminal with mouse support, and it reads its colours live from whatever rice
 you point it at.
 
 ## Install
 
-### Arch
+Vorgan is one Rust binary. You need a Rust toolchain to build it and `bsdtar`
+(libarchive) at runtime for archive folders.
 
-The easiest: clone this repo and let makepkg do the work. It asks for `cargo`
-and `libarchive`, builds the release binary, runs the tests and installs
-`/usr/bin/vorgan`:
+### 1. Prerequisites
+
+| Distro | Command |
+|---|---|
+| Arch | `sudo pacman -S --needed rust libarchive git` (or `rustup`) |
+| Debian / Ubuntu | `sudo apt install git libarchive-tools build-essential` + [rustup.rs](https://rustup.rs) (distro `rustc` is often too old; **Rust 1.86+** is needed) |
+| Fedora | `sudo dnf install git bsdtar gcc` + [rustup.rs](https://rustup.rs) |
+
+Check with `rustc --version` (1.86 or newer).
+
+### 2. Clone and build
 
 ```bash
-git clone https://github.com/exotic-erox/vorgan
-cd vorgan
+git clone https://github.com/exotic-erox/Vorgan-Rust.git
+cd Vorgan-Rust
+cargo build --release      # first build downloads crates, takes a minute
+cargo test --release       # optional: 19 tests
+```
+
+### 3. Install
+
+Pick one:
+
+```bash
+cargo install --path .                                   # -> ~/.cargo/bin/vorgan
+# or
+sudo install -Dm755 target/release/vorgan /usr/local/bin/vorgan
+# or, on Arch, as a real package (builds, tests, installs /usr/bin/vorgan)
 makepkg -si
 ```
 
-If the package is published on the AUR as `vorgan`, `paru -S vorgan` or
-`yay -S vorgan` does the same. The `PKGBUILD` in the repo root is that package.
+With `cargo install`, make sure `~/.cargo/bin` is on your `PATH`
+(rustup does this for you). Then run `vorgan ~/Documents`, or `vorgan`
+inside a folder.
 
-### Any other distro (cargo)
+### Update / uninstall
 
-1. Install a Rust toolchain — [rustup.rs](https://rustup.rs) or
-   `sudo apt install rustc cargo` on Debian/Ubuntu,
-   `sudo dnf install rust cargo` on Fedora — plus the libarchive binary
-   (`bsdtar`, used for archive folders):
-   - Debian / Ubuntu: `sudo apt install libarchive-tools`
-   - Fedora: `sudo dnf install bsdtar`
-   - Arch: `sudo pacman -S --needed libarchive`
-
-2. Clone and install to `~/.cargo/bin`:
-
-   ```bash
-   git clone https://github.com/exotic-erox/vorgan
-   cd vorgan
-   cargo install --path .
-   ```
-
-   Make sure `~/.cargo/bin` is on your `PATH` (rustup does this for you).
-
-3. Run it: `vorgan ~/Documents`, or `vorgan` inside a folder.
+```bash
+git pull && cargo install --path . --force    # update
+cargo uninstall vorgan                         # remove
+```
 
 ### Quit and cd
 
@@ -118,6 +137,7 @@ daily bread:
 | `u` | Undo the last trash / move |
 | `~` | Frequent folders from your fish history |
 | drag a pane edge | Resize the three panes (click to save; remembered across runs) |
+| mouse wheel | Scrolls the list or the preview under the pointer (cursor stays put) |
 | `t` | Open a terminal here |
 | `q` / `Q` | Quit and cd / quit |
 

@@ -66,6 +66,7 @@ The same actions are in the toolbar and the right-click menu.
 
 | Do this | What happens |
 |---|---|
+| Wheel | Scrolls the pane under the pointer (list, trail or preview) two rows per notch; the cursor stays put |
 | Click | Select (double-click opens: folder dive or `xdg-open`) |
 | Ctrl-click | Add / remove from selection |
 | Shift-click | Select a range |

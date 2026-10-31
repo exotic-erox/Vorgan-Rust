@@ -41,8 +41,8 @@ pub struct Line(pub Vec<Span>);
 
 pub enum Body {
     Text(Vec<Line>),
-    /// stretched to the pane's device pixels, ready for sixel or halfblocks
-    Pixels(Arc<image::RgbaImage>, (usize, usize)),
+    /// the decoded picture, capped to `MAX_EDGE`; the pane fits it to its box
+    Pixels(Arc<image::RgbaImage>),
 }
 
 pub struct Preview {
@@ -128,49 +128,25 @@ fn read_up_to(path: &std::path::Path, limit: u64) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-/// python halfblock stretched to the pane; the sixel body keeps that behaviour
-fn stretch_to(
-    im: &image::DynamicImage,
-    px: (usize, usize),
-    bg: crate::theme::Col,
-) -> image::RgbaImage {
-    let mut buf = image::RgbaImage::from_pixel(
-        px.0.max(1) as u32,
-        px.1.max(1) as u32,
-        image::Rgba([bg.0, bg.1, bg.2, 255]),
-    );
-    let fitted = image::imageops::resize(
-        im,
-        px.0.max(1) as u32,
-        px.1.max(1) as u32,
-        FilterType::Lanczos3,
-    );
-    image::imageops::overlay(&mut buf, &fitted, 0, 0);
-    buf
-}
+/// longest edge we keep of a decoded picture: plenty for any pane, small
+/// enough that re-fitting on a resize stays quick
+const MAX_EDGE: u32 = 1600;
 
-fn meta_row(meta: &[(String, String)], pal: &Palette) -> Vec<Line> {
-    meta.iter()
-        .map(|(k, v)| {
-            Line(vec![
-                Span::s(format!("{k:<10}"), rgb(pal.faint)),
-                Span::s(v.clone(), rgb(pal.text)),
-            ])
-        })
-        .collect()
+fn capped(im: image::DynamicImage) -> image::RgbaImage {
+    let im = if im.width().max(im.height()) > MAX_EDGE {
+        im.resize(MAX_EDGE, MAX_EDGE, FilterType::Triangle)
+    } else {
+        im
+    };
+    im.to_rgba8()
 }
 
 /// build the preview for one entry; runs in a worker thread
-#[allow(clippy::too_many_arguments)]
 pub fn build_preview(
     e: Option<&Entry>,
     pal: &Palette,
-    cols: usize,
-    rows: usize,
     nerd: bool,
     password: Option<&str>,
-    cell: (u16, u16),
-    want_pixels: bool,
 ) -> Preview {
     let nothing = Preview {
         head: Line(vec![Span::s("nothing selected", rgb(pal.faint))]),
@@ -219,6 +195,7 @@ pub fn build_preview(
                 }
             };
             if e.is_dir {
+                meta.clear();
                 return Body::Text(listing_lines(idx.children(&e.inner), pal, nerd, 60));
             }
             if e.kind == model::KIND_ARCHIVE {
@@ -234,11 +211,14 @@ pub fn build_preview(
                     return Body::Text(err_lines(&er.msg, pal));
                 }
             };
-            return content_body(e, Some(data), &meta, pal, cols, rows, cell, want_pixels);
+            return content_body(e, Some(data), &mut meta, pal);
         }
         if e.is_dir {
             match ops::list_real(e.path.as_ref().unwrap()) {
-                Ok(entries) => return Body::Text(listing_lines(entries, pal, nerd, 60)),
+                Ok(entries) => {
+                    meta.clear();
+                    return Body::Text(listing_lines(entries, pal, nerd, 60));
+                }
                 Err(msg) => return Body::Text(err_lines(&msg, pal)),
             }
         }
@@ -262,7 +242,7 @@ pub fn build_preview(
             } else {
                 None
             };
-            content_body(e, data, &meta, pal, cols, rows, cell, want_pixels)
+            content_body(e, data, &mut meta, pal)
         }
     })();
     Preview {
@@ -277,55 +257,24 @@ fn err_lines(msg: &str, pal: &Palette) -> Vec<Line> {
     vec![Line(vec![Span::s(msg, rgb(pal.err))])]
 }
 
-#[allow(clippy::too_many_arguments)]
 fn content_body(
     e: &Entry,
     data: Option<Vec<u8>>,
-    meta: &[(String, String)],
+    meta: &mut Vec<(String, String)>,
     pal: &Palette,
-    cols: usize,
-    rows: usize,
-    cell: (u16, u16),
-    want_pixels: bool,
 ) -> Body {
     if e.kind == 2 {
         let blob = data.unwrap_or_default();
-        match image::load_from_memory(&blob).map_err(|er| er.to_string()) {
+        return match image::load_from_memory(&blob) {
             Ok(im) => {
-                let dims = format!("{}×{}", im.width(), im.height());
-                let mut m: Vec<(String, String)> = meta.to_vec();
-                m.push(("pixels".into(), dims));
-                if want_pixels {
-                    let pane_px = (
-                        cols.max(2) * cell.0 as usize,
-                        rows.saturating_sub(6).max(2) * cell.1 as usize,
-                    );
-                    let fitted = stretch_to(&im, pane_px, pal.soft());
-                    return Body::Pixels(Arc::new(fitted), pane_px);
-                }
-                return meta_as_body(&m, pal);
+                meta.push(("pixels".into(), format!("{}×{}", im.width(), im.height())));
+                Body::Pixels(Arc::new(capped(im)))
             }
-            Err(msg) => return Body::Text(err_lines(&msg, pal)),
-        }
+            Err(er) => Body::Text(err_lines(&er.to_string(), pal)),
+        };
     }
     if matches!(e.kind, 5 | 7 | 8 | 9) {
-        let mut lines = meta_row(meta, pal);
-        lines.push(Line(vec![]));
-        lines.extend(text_preview(&data.unwrap_or_default(), pal));
-        return Body::Text(lines);
+        return Body::Text(text_preview(&data.unwrap_or_default(), pal));
     }
-    meta_as_body(meta, pal)
-}
-
-fn meta_as_body(meta: &[(String, String)], pal: &Palette) -> Body {
-    Body::Text(
-        meta.iter()
-            .map(|(k, v)| {
-                Line(vec![
-                    Span::s(format!("{k:<10}"), rgb(pal.faint)),
-                    Span::s(v.clone(), rgb(pal.text)),
-                ])
-            })
-            .collect(),
-    )
+    Body::Text(vec![])
 }
